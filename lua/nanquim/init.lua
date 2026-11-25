@@ -1,7 +1,68 @@
 local M = {}
 local ns = vim.api.nvim_create_namespace("nanquim")
 
-local DEBOUNCE_MS = 50
+-- Icon sets. Bullets are drawn with overlay on top of a 1-cell "-", so they
+-- must be 1 cell wide; the other icons are inserted and can be any width.
+local PRESETS = {
+  unicode = {
+    headings = { "◆ ", "◆ ", "◆ ", "◆ ", "◆ ", "◆ " },
+    bullets = { "●", "○", "■", "□" },
+    checkbox = { todo = "▢", done = "▣" },
+    image = "▧ ",
+    callouts = { NOTE = "ℹ", TIP = "▶", IMPORTANT = "◉", WARNING = "▲", CAUTION = "‼" },
+  },
+  -- Needs a Nerd Font (https://www.nerdfonts.com)
+  nerd = {
+    headings = { "󰲡 ", "󰲣 ", "󰲥 ", "󰲧 ", "󰲩 ", "󰲫 " },
+    bullets = { "●", "○", "■", "□" },
+    checkbox = { todo = "󰄱", done = "󰱒" },
+    image = "󰥶 ",
+    callouts = { NOTE = "󰋽", TIP = "󰌶", IMPORTANT = "󰅾", WARNING = "󰀪", CAUTION = "󰳦" },
+  },
+}
+
+local DEFAULTS = {
+  filetypes = { "markdown" }, -- rendered automatically when opened
+  debounce = 50, -- ms after the last edit/cursor move before redrawing
+  preset = "unicode", -- icon set: "unicode" (any font) or "nerd" (Nerd Font)
+  icons = {}, -- overrides on top of the preset, e.g. { bullets = { "-", "*" } }
+}
+
+-- Deep merge where a list in `override` replaces the base list whole.
+-- (vim.tbl_deep_extend merges lists index by index: overriding bullets with
+-- { "-" } would keep the 2nd to 4th default bullets.)
+local function merge(base, override)
+  if override == nil then
+    return base
+  end
+  -- next(t) ~= nil: vim.islist({}) is true, but {} means "no changes"
+  if type(base) ~= "table" or type(override) ~= "table" or (vim.islist(override) and next(override) ~= nil) then
+    return override
+  end
+  local result = {}
+  for key, value in pairs(base) do
+    result[key] = value
+  end
+  for key, value in pairs(override) do
+    result[key] = merge(base[key], value)
+  end
+  return result
+end
+
+local function resolve_config(opts)
+  local config = merge(DEFAULTS, opts)
+  local preset = PRESETS[config.preset]
+  if not preset then
+    vim.notify("nanquim: unknown preset '" .. tostring(config.preset) .. "', using 'unicode'", vim.log.levels.WARN)
+    preset = PRESETS.unicode
+  end
+  config.icons = merge(preset, config.icons)
+  return config
+end
+
+-- Defaults until setup() is called with the user's options
+local config = resolve_config({})
+
 -- Window options while rendering; the user's values are saved and restored
 local WIN_OPTS = { conceallevel = 2, concealcursor = "" }
 
@@ -36,17 +97,15 @@ local inline_query = vim.treesitter.query.parse("markdown_inline", [[
   (uri_autolink) @autolink
 ]])
 
--- GitHub callouts ("> [!NOTE]"): icon, title and highlight group
+-- GitHub callouts ("> [!NOTE]"): title and highlight group (icons: config)
 local CALLOUTS = {
-  NOTE = { "ℹ", "Note", "NanquimNote" },
-  TIP = { "▶", "Tip", "NanquimTip" },
-  IMPORTANT = { "◉", "Important", "NanquimImportant" },
-  WARNING = { "▲", "Warning", "NanquimWarning" },
-  CAUTION = { "‼", "Caution", "NanquimCaution" },
+  NOTE = { "Note", "NanquimNote" },
+  TIP = { "Tip", "NanquimTip" },
+  IMPORTANT = { "Important", "NanquimImportant" },
+  WARNING = { "Warning", "NanquimWarning" },
+  CAUTION = { "Caution", "NanquimCaution" },
 }
 
--- One bullet per nesting level, cycling after the last
-local BULLETS = { "●", "○", "■", "□" }
 local BULLET_TYPES = { list_marker_minus = true, list_marker_plus = true, list_marker_star = true }
 
 -- Foreground color of a group (links followed), or nil
@@ -127,7 +186,7 @@ local function is_enabled(buf)
   if enabled[buf] ~= nil then
     return enabled[buf]
   end
-  return vim.bo[buf].filetype == "markdown"
+  return vim.tbl_contains(config.filetypes, vim.bo[buf].filetype)
 end
 
 -- Last row a node covers. Nodes that end with a newline end at {next_row, 0}.
@@ -146,7 +205,8 @@ function renderers.heading(ctx, node)
   if content then
     _, text_col = content:start() -- skip the space after the marker too
   end
-  local hl = "NanquimH" .. marker:type():match("atx_h(%d)_marker")
+  local level = tonumber(marker:type():match("atx_h(%d)_marker"))
+  local hl = "NanquimH" .. level
 
   -- Background across the whole line, the cursor line included
   vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, 0, { line_hl_group = hl .. "Bg" })
@@ -158,7 +218,7 @@ function renderers.heading(ctx, node)
     vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, marker_col, {
       end_col = text_col,
       conceal = "",
-      virt_text = { { "◆ ", hl } },
+      virt_text = { { config.icons.headings[level], hl } },
       virt_text_pos = "inline",
     })
   end
@@ -254,14 +314,16 @@ function renderers.bullet(ctx, node)
   if row == ctx.cursor_row or (sibling and sibling:type():match("^task_list_marker")) then
     return -- cursor line shows raw; task items are drawn by renderers.checkbox
   end
+  -- One bullet per nesting level, cycling after the last
+  local bullets = config.icons.bullets
   local level = count_ancestors(node, "list")
   vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
-    virt_text = { { BULLETS[(level - 1) % #BULLETS + 1], "NanquimBullet" } },
+    virt_text = { { bullets[(level - 1) % #bullets + 1], "NanquimBullet" } },
     virt_text_pos = "overlay",
   })
 end
 
--- "- [ ]" becomes "▢" and "- [x]" becomes "▣" with the text dimmed. The box
+-- "- [ ]" and "- [x]" become a box icon, with done items dimmed. The box
 -- takes the bullet's place; in "1. [ ]" the number stays.
 function renderers.checkbox(ctx, node)
   local row, col, _, end_col = node:range()
@@ -275,7 +337,7 @@ function renderers.checkbox(ctx, node)
     vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
       end_col = end_col,
       conceal = "",
-      virt_text = { done and { "▣", "NanquimDone" } or { "▢", "NanquimTodo" } },
+      virt_text = { done and { config.icons.checkbox.done, "NanquimDone" } or { config.icons.checkbox.todo, "NanquimTodo" } },
       virt_text_pos = "inline",
     })
   end
@@ -306,12 +368,12 @@ function renderers.quote(ctx, node)
   local from, kind, to = line(start_row):match("^[%s>]*()%[!(%a+)%]()", start_col + 1)
   local callout = kind and CALLOUTS[kind:upper()]
   if callout then
-    hl = callout[3]
+    hl = callout[2]
     if start_row ~= ctx.cursor_row then
       vim.api.nvim_buf_set_extmark(ctx.buf, ns, start_row, from - 1, {
         end_col = to - 1,
         conceal = "",
-        virt_text = { { callout[1] .. " " .. callout[2], hl } },
+        virt_text = { { config.icons.callouts[kind:upper()] .. " " .. callout[1], hl } },
         virt_text_pos = "inline",
       })
     end
@@ -396,7 +458,7 @@ function renderers.autolink(ctx, node)
   paint(ctx, node, "NanquimLink")
 end
 
--- ![alt](path) becomes "▧ alt". The alt text stays real text and only the
+-- ![alt](path) becomes "<icon> alt". The alt text stays real text and only the
 -- icon is inserted: Neovim sizes wrapped lines by raw text + virt_text, so
 -- long inserted text can add a blank screen row.
 function renderers.image(ctx, node)
@@ -411,19 +473,19 @@ function renderers.image(ctx, node)
       end_row = desc_row,
       end_col = desc_col,
       conceal = "",
-      virt_text = not on_cursor and { { "▧ ", "NanquimImage" } } or nil,
+      virt_text = not on_cursor and { { config.icons.image, "NanquimImage" } } or nil,
       virt_text_pos = "inline",
     })
     conceal(ctx, desc_end_row, desc_end_col, end_row, end_col)
     paint(ctx, desc, "NanquimImage")
   elseif dest and not on_cursor then
     -- ![](path): Neovim's own highlighter conceals the path, so it can't
-    -- stay real text; show "▧ path" as virt_text instead
+    -- stay real text; show "<icon> path" as virt_text instead
     vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
       end_row = end_row,
       end_col = end_col,
       conceal = "",
-      virt_text = { { "▧ " .. vim.treesitter.get_node_text(dest, ctx.buf), "NanquimImage" } },
+      virt_text = { { config.icons.image .. vim.treesitter.get_node_text(dest, ctx.buf), "NanquimImage" } },
       virt_text_pos = "inline",
     })
   end
@@ -660,7 +722,7 @@ local function refresh(win)
 end
 
 -- Debounce: each call restarts the timer, so a burst of events (typing,
--- holding j) renders once, DEBOUNCE_MS after the last one.
+-- holding j) renders once, config.debounce ms after the last one.
 local function render_later(win)
   local buf = vim.api.nvim_win_get_buf(win)
   if not is_enabled(buf) then
@@ -670,23 +732,54 @@ local function render_later(win)
   timers[buf]:stop()
   -- Timer callbacks run outside the main loop, where most of the API is
   -- off-limits; schedule_wrap moves the call back onto it.
-  timers[buf]:start(DEBOUNCE_MS, 0, vim.schedule_wrap(function()
-    if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+  timers[buf]:start(config.debounce, 0, vim.schedule_wrap(function()
+    -- Re-check: the buffer may have been disabled while the timer ran
+    if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf and is_enabled(buf) then
       M.render(win)
     end
   end))
 end
 
-function M.toggle(buf)
-  buf = buf or vim.api.nvim_get_current_buf()
-  enabled[buf] = not is_enabled(buf)
+local function set_enabled(buf, value)
+  enabled[buf] = value
   for _, win in ipairs(vim.fn.win_findbuf(buf)) do
     refresh(win)
   end
 end
 
-function M.setup()
-  vim.api.nvim_create_user_command("Nanquim", function() M.toggle() end, {})
+function M.enable(buf)
+  set_enabled(buf or vim.api.nvim_get_current_buf(), true)
+end
+
+function M.disable(buf)
+  set_enabled(buf or vim.api.nvim_get_current_buf(), false)
+end
+
+function M.toggle(buf)
+  buf = buf or vim.api.nvim_get_current_buf()
+  set_enabled(buf, not is_enabled(buf))
+end
+
+-- :Nanquim [toggle|enable|disable], toggle when no argument is given
+local commands = { toggle = M.toggle, enable = M.enable, disable = M.disable }
+
+function M.setup(opts)
+  config = resolve_config(opts or {})
+
+  vim.api.nvim_create_user_command("Nanquim", function(args)
+    local name = args.args ~= "" and args.args or "toggle"
+    if not commands[name] then
+      vim.notify("nanquim: unknown subcommand '" .. name .. "'", vim.log.levels.ERROR)
+      return
+    end
+    commands[name]()
+  end, {
+    nargs = "?",
+    -- Tab completion for the subcommand
+    complete = function()
+      return vim.tbl_keys(commands)
+    end,
+  })
 
   set_highlights()
   local group = vim.api.nvim_create_augroup("nanquim", { clear = true })
