@@ -23,9 +23,9 @@ Texto com **negrito**, *itálico*, ***os dois***, `código` e ~~tachado~~.
 Um [link para o Neovim](https://neovim.io "site oficial") e um link direto:
 <https://github.com>.
 
-Imagem com texto alternativo: ![logo do Neovim](imagens/logo.png)
+Imagem com texto alternativo: ![logo do nanquim](imagens/logo.png)
 
-Imagem sem texto alternativo: ![](imagens/foto.jpg)
+Imagem sem texto alternativo: ![](imagens/paisagem.png)
 
 ### Título com `código` e **negrito**
 

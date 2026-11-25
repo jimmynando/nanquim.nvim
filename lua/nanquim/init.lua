@@ -740,6 +740,144 @@ local function render_later(win)
   end))
 end
 
+-- Image preview (:Nanquim image) ---------------------------------------------
+
+local image_query = vim.treesitter.query.parse("markdown_inline", "(image) @image")
+
+-- The image on the cursor line: the one under the cursor, else the first one
+local function image_at_cursor(buf, win)
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local row, col = cursor[1] - 1, cursor[2]
+  local ok, parser = pcall(vim.treesitter.get_parser, buf, "markdown")
+  if not ok or not parser then
+    return
+  end
+  parser:parse({ row, row + 1 })
+  local inline = parser:children().markdown_inline
+  local first
+  for _, tree in ipairs(inline and inline:trees() or {}) do
+    for _, node in image_query:iter_captures(tree:root(), buf, row, row + 1) do
+      local start_row, start_col, _, end_col = node:range()
+      if start_row == row then
+        if col >= start_col and col < end_col then
+          return node
+        end
+        first = first or node
+      end
+    end
+  end
+  return first
+end
+
+-- Absolute path of the image file; relative paths are relative to the .md file
+local function image_path(buf, node)
+  local dest = find_child(node, "link_destination")
+  if not dest then
+    return nil, "the image has no path"
+  end
+  local path = vim.treesitter.get_node_text(dest, buf)
+  if path:match("^%a+://") then
+    return nil, "remote images are not supported: " .. path
+  end
+  path = vim.fs.normalize(path) -- expands "~" and $VARS
+  if not path:match("^/") then
+    path = vim.fs.joinpath(vim.fs.dirname(vim.api.nvim_buf_get_name(buf)), path)
+  end
+  if not vim.uv.fs_stat(path) then
+    return nil, "file not found: " .. path
+  end
+  return path
+end
+
+-- catimg counts in half cells: "-w 60" gives 30 columns, "-H 20" gives 10 rows
+local function catimg(path, flag, cells)
+  local result = vim.system({ "catimg", flag, tostring(cells * 2), path }, { text = true }):wait()
+  return result.code == 0 and result.stdout or nil
+end
+
+-- Columns and rows of catimg output, ignoring the color escape codes
+local function ansi_size(output)
+  local plain = output:gsub("\27%[[%d;?]*%a", "")
+  local width, height = 0, 0
+  for line in plain:gmatch("[^\n]+") do
+    width = math.max(width, vim.fn.strdisplaywidth(line))
+    height = height + 1
+  end
+  return width, height
+end
+
+-- Show the image on the cursor line in a floating window, drawn by catimg
+function M.preview_image()
+  local function fail(message)
+    vim.notify("nanquim: " .. message, vim.log.levels.WARN)
+  end
+  if vim.fn.executable("catimg") == 0 then
+    return fail("catimg not found, install it to preview images")
+  end
+
+  local buf, win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
+  local node = image_at_cursor(buf, win)
+  if not node then
+    return fail("no image on this line")
+  end
+  local path, err = image_path(buf, node)
+  if not path then
+    return fail(err)
+  end
+
+  -- Fit in 80% of the editor: by width first, by height if still too tall
+  local max_cols = math.floor(vim.o.columns * 0.8)
+  local max_rows = math.floor(vim.o.lines * 0.8) - 2 -- minus the border
+  local output = catimg(path, "-w", max_cols)
+  if output and select(2, ansi_size(output)) > max_rows then
+    output = catimg(path, "-H", max_rows)
+  end
+  if not output then
+    return fail("catimg could not read " .. path)
+  end
+  -- Drop the final newline: in a terminal exactly `height` rows tall it
+  -- would scroll the first row out of view
+  output = output:gsub("\n([^\n]*)$", "%1")
+  local width, height = ansi_size(output)
+
+  local desc = find_child(node, "image_description")
+  local title = desc and vim.treesitter.get_node_text(desc, buf) or vim.fs.basename(path)
+  local float_buf = vim.api.nvim_create_buf(false, true)
+  local float = vim.api.nvim_open_win(float_buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2) - 1,
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " " .. title .. " ",
+    title_pos = "center",
+  })
+
+  -- A terminal buffer interprets catimg's ANSI color codes (a normal buffer
+  -- would show them as text). nvim_open_term makes one with no process
+  -- behind it; we write the output into it. Terminals expect "\r\n".
+  local chan = vim.api.nvim_open_term(float_buf, {})
+  vim.api.nvim_chan_send(chan, (output:gsub("\n", "\r\n")))
+
+  for _, key in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", key, "<cmd>close<cr>", { buffer = float_buf, nowait = true })
+  end
+  -- Close it when focus moves elsewhere, so it never lingers
+  vim.api.nvim_create_autocmd("WinLeave", {
+    buffer = float_buf,
+    once = true,
+    callback = function()
+      if vim.api.nvim_win_is_valid(float) then
+        vim.api.nvim_win_close(float, true)
+      end
+    end,
+  })
+end
+
+-- Enable/disable ---------------------------------------------------------------
+
 local function set_enabled(buf, value)
   enabled[buf] = value
   for _, win in ipairs(vim.fn.win_findbuf(buf)) do
@@ -760,8 +898,8 @@ function M.toggle(buf)
   set_enabled(buf, not is_enabled(buf))
 end
 
--- :Nanquim [toggle|enable|disable], toggle when no argument is given
-local commands = { toggle = M.toggle, enable = M.enable, disable = M.disable }
+-- :Nanquim [toggle|enable|disable|image], toggle when no argument is given
+local commands = { toggle = M.toggle, enable = M.enable, disable = M.disable, image = M.preview_image }
 
 function M.setup(opts)
   config = resolve_config(opts or {})

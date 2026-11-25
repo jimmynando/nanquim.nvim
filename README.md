@@ -22,6 +22,7 @@ text and lines.
 - **Tables**: box-drawing borders, and columns that stay aligned when the
   markup inside cells is concealed
 - **Horizontal rules** across the whole window
+- **Image preview** in a floating window, drawn with `catimg`
 - Colors come from your colorscheme and update on `:colorscheme`
 - Only the visible part of the window is rendered, so large files stay fast
 
@@ -34,6 +35,7 @@ code block is never mistaken for a heading.
 - The `markdown` and `markdown_inline` Treesitter parsers (bundled with Neovim)
 - `termguicolors` for the heading backgrounds
 - Optional: a [Nerd Font](https://www.nerdfonts.com) for the `nerd` icon preset
+- Optional: [catimg](https://github.com/posva/catimg) for `:Nanquim image`
 
 ## Installation
 
@@ -91,9 +93,22 @@ one cell wide. The other icons can be any width.
 | `:Nanquim` or `:Nanquim toggle` | Toggle rendering in the current buffer |
 | `:Nanquim enable` | Turn rendering on |
 | `:Nanquim disable` | Turn rendering off and restore the window options |
+| `:Nanquim image` | Preview the image on the cursor line in a floating window (`q` or `<Esc>` closes it) |
 
 The same actions are available from Lua: `require("nanquim").toggle()`,
-`.enable()` and `.disable()`. Each takes an optional buffer number.
+`.enable()` and `.disable()`, which take an optional buffer number, and
+`.preview_image()`.
+
+nanquim sets no key mappings. To preview images with a key:
+
+```lua
+vim.keymap.set("n", "<leader>mi", "<cmd>Nanquim image<cr>", { desc = "Preview Markdown image" })
+```
+
+Image paths are relative to the Markdown file. Remote images (`https://...`)
+are not supported. The preview draws the image with colored half blocks, so
+each cell holds two pixels: fine for logos, diagrams and photos, too coarse
+for screenshots of text.
 
 ## Highlight groups
 
