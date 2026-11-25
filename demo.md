@@ -1,126 +1,126 @@
-# Demo do nanquim
+# nanquim demo
 
-Parágrafo comum: nada muda aqui.
+A plain paragraph: nothing changes here.
 
-## Títulos
+## Headings
 
-### Nível 3
+### Level 3
 
-#### Nível 4
+#### Level 4
 
-##### Nível 5
+##### Level 5
 
-###### Nível 6
+###### Level 6
 
-#sem espaço não é título
+#no space after the hash, so this is not a heading
 
-> # Título dentro de citação
+> # Heading inside a quote
 
-## Texto inline
+## Inline text
 
-Texto com **negrito**, *itálico*, ***os dois***, `código` e ~~tachado~~.
+Text with **bold**, *italic*, ***both***, `code` and ~~strikethrough~~.
 
-Um [link para o Neovim](https://neovim.io "site oficial") e um link direto:
+A [link to Neovim](https://neovim.io "official site") and a bare link:
 <https://github.com>.
 
-Imagem com texto alternativo: ![logo do nanquim](imagens/logo.png)
+Image with alt text: ![nanquim logo](images/logo.png)
 
-Imagem sem texto alternativo: ![](imagens/paisagem.png)
+Image without alt text: ![](images/landscape.png)
 
-### Título com `código` e **negrito**
+### Heading with `code` and **bold**
 
-## Tabelas
+## Tables
 
-Alinhada: ganha bordas, e as células com negrito, código e link continuam
-alinhadas mesmo com a marcação escondida.
+Aligned: it gets borders, and the cells with bold, code and a link stay
+aligned even with their markup hidden.
 
-| Elemento | Exemplo                     | Status |
-|----------|-----------------------------|--------|
-| Negrito  | **forte**                   | ok     |
-| Código   | `vim.api`                   | ok     |
-| Link     | [Neovim](https://neovim.io) | ok     |
-| Acentos  | ação, coração               | ok     |
+| Element | Example                     | Status |
+|---------|-----------------------------|--------|
+| Bold    | **strong**                  | ok     |
+| Code    | `vim.api`                   | ok     |
+| Link    | [Neovim](https://neovim.io) | ok     |
+| Accents | café, naïve, ação           | ok     |
 
-Desalinhada: só troca os `|` e a linha do meio, sem bordas.
+Not aligned: only the `|` and the middle row change, no borders.
 
 | a | b |
 |---|---|
-| célula longa | x |
+| a long cell | x |
 
-Sem `|` nas pontas:
+No `|` on the edges:
 
 x | y
 --|--
 1 | 2
 
-## Blocos de código
+## Code blocks
 
 ```lua
-local function oi(nome)
-  return "olá, " .. nome
+local function hello(name)
+  return "hello, " .. name
 end
 ```
 
 ~~~
-bloco sem linguagem
+block with no language
 ~~~
 
 ```bash
-# comentário de bash, não é título
+# a bash comment, not a heading
 ```
 
 ```markdown
-# exemplo de markdown, não é título
+# a markdown example, not a heading
 ```
 
-## Listas
+## Lists
 
-- nível 1
-  - nível 2
-    - nível 3
-      - nível 4
-        - nível 5 volta ao símbolo do nível 1
-* asterisco também vira bullet
-+ mais também
+- level 1
+  - level 2
+    - level 3
+      - level 4
+        - level 5 cycles back to the level 1 symbol
+* an asterisk is a bullet too
++ and so is a plus
 
-1. lista numerada
-2. fica com os números
+1. a numbered list
+2. keeps its numbers
 
-- [ ] tarefa pendente
-- [x] tarefa feita
-  - [X] subtarefa feita, com X maiúsculo
-1. [ ] tarefa numerada mantém o número
+- [ ] pending task
+- [x] done task
+  - [X] done subtask, with an uppercase X
+1. [ ] a numbered task keeps its number
 
-## Citações e callouts
+## Quotes and callouts
 
-> Citação comum: o `>` vira uma barra.
-> Segunda linha da mesma citação.
+> A plain quote: the `>` becomes a bar.
+> Second line of the same quote.
 >
-> > Citação aninhada: duas barras.
+> > Nested quote: two bars.
 
 > [!NOTE]
-> Informação que vale notar.
+> Information worth noticing.
 
 > [!TIP]
-> Uma dica para fazer melhor.
+> A tip for doing it better.
 
 > [!IMPORTANT]
-> Algo essencial para o objetivo.
+> Something essential to the goal.
 
 > [!WARNING]
-> Pede atenção para evitar problemas.
+> Calls for attention to avoid problems.
 
 > [!CAUTION]
-> Risco de consequência negativa.
+> Risk of a negative outcome.
 
-> [!NOTA]
-> Tipo desconhecido fica como citação comum.
+> [!INFO]
+> An unknown type stays a plain quote.
 
-## Linha horizontal
+## Horizontal rule
 
 ---
 
 ***
 
-Título sublinhado (o --- abaixo não é linha horizontal)
+Underlined heading (the --- below is not a horizontal rule)
 ---
