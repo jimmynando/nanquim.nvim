@@ -10,9 +10,24 @@ local enabled = {}
 -- buf -> uv timer used to debounce renders
 local timers = {}
 
--- ATX headings ("# ..." to "###### ...") from the block grammar.
--- Fenced code is a separate node type, so "# comment" inside it never matches.
-local heading_query = vim.treesitter.query.parse("markdown", "(atx_heading) @heading")
+-- Block-level elements from the markdown grammar. Each capture name maps to
+-- a function in `renderers` below. Code is its own node type, so "# comment"
+-- inside a fence never matches @heading.
+local block_query = vim.treesitter.query.parse("markdown", [[
+  (atx_heading) @heading
+  (fenced_code_block) @code
+  (thematic_break) @rule
+]])
+
+-- `default = true` lets a colorscheme define these groups itself
+local function set_highlights()
+  local function link(name, target)
+    vim.api.nvim_set_hl(0, name, { link = target, default = true })
+  end
+  link("NanquimCode", "ColorColumn")
+  link("NanquimCodeInfo", "Special")
+  link("NanquimRule", "LineNr")
+end
 
 local function is_enabled(buf)
   if enabled[buf] ~= nil then
@@ -21,7 +36,16 @@ local function is_enabled(buf)
   return vim.bo[buf].filetype == "markdown"
 end
 
-local function render_heading(buf, node, cursor_row)
+-- Last row a node covers. Nodes that end with a newline end at {next_row, 0}.
+local function last_row(node)
+  local _, _, end_row, end_col = node:range()
+  return end_col == 0 and end_row - 1 or end_row
+end
+
+-- ctx = { buf, win, cursor_row, first, last } for the render in progress
+local renderers = {}
+
+function renderers.heading(ctx, node)
   local marker = node:child(0) -- atx_h1_marker .. atx_h6_marker, e.g. "##"
   local content = node:field("heading_content")[1] -- nil for a bare "#"
   local row, marker_col, _, text_col = marker:range()
@@ -32,8 +56,8 @@ local function render_heading(buf, node, cursor_row)
   -- Hide "## " and show a marker in its place. Anti-conceal: on the cursor
   -- line Neovim already shows the concealed text, but not our virt_text,
   -- so skip this mark there and the raw "## " shows alone.
-  if row ~= cursor_row then
-    vim.api.nvim_buf_set_extmark(buf, ns, row, marker_col, {
+  if row ~= ctx.cursor_row then
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, marker_col, {
       end_col = text_col,
       conceal = "",
       virt_text = { { "◆ ", "Title" } },
@@ -44,12 +68,71 @@ local function render_heading(buf, node, cursor_row)
   -- Paint the heading text
   if content then
     local _, _, end_row, end_col = content:range()
-    vim.api.nvim_buf_set_extmark(buf, ns, row, text_col, {
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, text_col, {
       end_row = end_row,
       end_col = end_col,
       hl_group = "Title",
     })
   end
+end
+
+-- Width of the text area: window width minus number/sign/fold columns
+local function text_width(win)
+  return vim.api.nvim_win_get_width(win) - vim.fn.getwininfo(win)[1].textoff
+end
+
+-- Background on every line, fence lines hidden whole, and the language name
+-- on a fake line (virt_lines) where the opening fence was.
+function renderers.code(ctx, node)
+  local start_row, col = node:start()
+  local end_row = last_row(node)
+
+  -- A huge block may start far above the screen; only mark the visible part
+  for row = math.max(start_row, ctx.first), math.min(end_row, ctx.last - 1) do
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, 0, { line_hl_group = "NanquimCode" })
+  end
+
+  local language
+  for child in node:iter_children() do
+    if child:type() == "fenced_code_block_delimiter" then
+      -- conceal_lines (Neovim 0.11+) hides the whole line, not just the
+      -- characters. Like conceal, the cursor line still shows raw.
+      local row = child:start()
+      vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, 0, { conceal_lines = "" })
+    elseif child:type() == "info_string" and child:child(0) then
+      language = vim.treesitter.get_node_text(child:child(0), ctx.buf)
+    end
+  end
+
+  -- The fake line hangs above the first code line. Anti-conceal: skip it when
+  -- the cursor is on the opening fence, which then shows raw ("```lua").
+  if language and start_row < end_row and start_row ~= ctx.cursor_row then
+    local label = " " .. language
+    local fill = text_width(ctx.win) - col - vim.fn.strdisplaywidth(label)
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, start_row + 1, 0, {
+      virt_lines = { {
+        { string.rep(" ", col) }, -- block indent (e.g. inside a list)
+        -- A list of groups is combined: code background + label color
+        { label, { "NanquimCode", "NanquimCodeInfo" } },
+        -- virt_lines get no line_hl_group, so pad the background by hand
+        { string.rep(" ", fill), "NanquimCode" },
+      } },
+      virt_lines_above = true,
+    })
+  end
+end
+
+-- "---", "***" or "___" drawn over as a line across the whole window
+function renderers.rule(ctx, node)
+  local row, col = node:start()
+  if row == ctx.cursor_row then
+    return -- anti-conceal: overlay virt_text would hide the raw text
+  end
+  local width = text_width(ctx.win) - col
+  vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
+    virt_text = { { string.rep("─", width), "NanquimRule" } },
+    virt_text_pos = "overlay",
+  })
 end
 
 -- Rows to render: what the window shows, plus one screen above and below
@@ -72,14 +155,20 @@ function M.render(win)
   end
 
   local first, last = visible_range(win)
-  local cursor_row = vim.api.nvim_win_get_cursor(win)[1] - 1
+  local ctx = {
+    buf = buf,
+    win = win,
+    cursor_row = vim.api.nvim_win_get_cursor(win)[1] - 1,
+    first = first,
+    last = last,
+  }
   parser:parse({ first, last })
 
   -- trees() on the root parser = block grammar only. for_each_tree would also
   -- visit markdown injected into ```markdown fences and render headings there.
   for _, tree in ipairs(parser:trees()) do
-    for _, node in heading_query:iter_captures(tree:root(), buf, first, last) do
-      render_heading(buf, node, cursor_row)
+    for id, node in block_query:iter_captures(tree:root(), buf, first, last) do
+      renderers[block_query.captures[id]](ctx, node)
     end
   end
 end
@@ -150,7 +239,11 @@ end
 function M.setup()
   vim.api.nvim_create_user_command("Nanquim", function() M.toggle() end, {})
 
+  set_highlights()
   local group = vim.api.nvim_create_augroup("nanquim", { clear = true })
+
+  -- :colorscheme clears every highlight group, ours included
+  vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = set_highlights })
 
   -- A buffer appeared in a window, or its filetype was (re)detected
   vim.api.nvim_create_autocmd({ "BufWinEnter", "FileType" }, {
@@ -178,6 +271,18 @@ function M.setup()
       local win = tonumber(args.match)
       if win and vim.api.nvim_win_is_valid(win) then
         render_later(win)
+      end
+    end,
+  })
+
+  -- Resized: the horizontal rule width changed
+  vim.api.nvim_create_autocmd("WinResized", {
+    group = group,
+    callback = function()
+      for _, win in ipairs(vim.v.event.windows) do
+        if vim.api.nvim_win_is_valid(win) then
+          render_later(win)
+        end
       end
     end,
   })
