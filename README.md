@@ -83,11 +83,15 @@ require("nanquim").setup({
 
 | Key | `unicode` | `nerd` |
 |---|---|---|
-| `headings` | `◆` for every level | `󰲡 󰲣 󰲥 󰲧 󰲩 󰲫` |
+| `headings` | `◆` for every level | `U+F0CA1` `U+F0CA3` `U+F0CA5` `U+F0CA7` `U+F0CA9` `U+F0CAB` |
 | `bullets` | `● ○ ■ □` | `● ○ ■ □` |
-| `checkbox` | `todo = "▢"`, `done = "▣"` | `todo = "󰄱"`, `done = "󰱒"` |
-| `image` | `▧` | `󰥶` |
-| `callouts` | `ℹ ▶ ◉ ▲ ‼` | `󰋽 󰌶 󰅾 󰀪 󰳦` |
+| `checkbox` | `todo = "▢"`, `done = "▣"` | todo `U+F0131`, done `U+F0C52` |
+| `image` | `▧` | `U+F0976` |
+| `callouts` | `ℹ ▶ ◉ ▲ ‼` | `U+F02FD` `U+F0336` `U+F017E` `U+F002A` `U+F0CE6` |
+
+The `nerd` column lists code points, since browsers usually lack Nerd Font
+glyphs; look them up in the [Nerd Fonts cheat sheet](https://www.nerdfonts.com/cheat-sheet).
+In Lua, write one as an escape, for example `"\u{F0131}"`.
 
 Bullets are drawn over the `-`, `*` or `+` character, so they must be exactly
 one cell wide. The other icons can be any width.
