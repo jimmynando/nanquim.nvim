@@ -22,7 +22,8 @@ text and lines.
 - **Tables**: box-drawing borders, and columns that stay aligned when the
   markup inside cells is concealed
 - **Horizontal rules** across the whole window
-- **Image preview** in a floating window, drawn with `catimg`
+- **Images** drawn right in the buffer under their line, and a larger
+  preview in a floating window, both with `catimg`
 - Colors come from your colorscheme and update on `:colorscheme`
 - Only the visible part of the window is rendered, so large files stay fast
 
@@ -35,7 +36,7 @@ code block is never mistaken for a heading.
 - The `markdown` and `markdown_inline` Treesitter parsers (bundled with Neovim)
 - `termguicolors` for the heading backgrounds
 - Optional: a [Nerd Font](https://www.nerdfonts.com) for the `nerd` icon preset
-- Optional: [catimg](https://github.com/posva/catimg) for `:Nanquim image`
+- Optional: [catimg](https://github.com/posva/catimg) for images
 
 ## Installation
 
@@ -60,6 +61,11 @@ require("nanquim").setup({
   debounce = 50, -- ms after the last edit/cursor move before redrawing
   preset = "unicode", -- icon set: "unicode" (any font) or "nerd" (Nerd Font)
   icons = {}, -- overrides on top of the preset
+  image = {
+    inline = true, -- draw images under their line (needs catimg and termguicolors)
+    max_width = 60, -- columns
+    max_height = 15, -- rows
+  },
 })
 ```
 
@@ -106,9 +112,10 @@ vim.keymap.set("n", "<leader>mi", "<cmd>Nanquim image<cr>", { desc = "Preview Ma
 ```
 
 Image paths are relative to the Markdown file. Remote images (`https://...`)
-are not supported. The preview draws the image with colored half blocks, so
-each cell holds two pixels: fine for logos, diagrams and photos, too coarse
-for screenshots of text.
+are not supported. Images are drawn with colored half blocks, so each cell
+holds two pixels: fine for logos, diagrams and photos, too coarse for
+screenshots of text. Inline images appear a moment after the rest, because
+`catimg` runs in the background; the result is cached per file.
 
 ## Highlight groups
 

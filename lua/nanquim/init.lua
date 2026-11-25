@@ -26,6 +26,11 @@ local DEFAULTS = {
   debounce = 50, -- ms after the last edit/cursor move before redrawing
   preset = "unicode", -- icon set: "unicode" (any font) or "nerd" (Nerd Font)
   icons = {}, -- overrides on top of the preset, e.g. { bullets = { "-", "*" } }
+  image = {
+    inline = true, -- draw images under their line (needs catimg and termguicolors)
+    max_width = 60, -- columns
+    max_height = 15, -- rows
+  },
 }
 
 -- Deep merge where a list in `override` replaces the base list whole.
@@ -458,9 +463,150 @@ function renderers.autolink(ctx, node)
   paint(ctx, node, "NanquimLink")
 end
 
--- ![alt](path) becomes "<icon> alt". The alt text stays real text and only the
--- icon is inserted: Neovim sizes wrapped lines by raw text + virt_text, so
--- long inserted text can add a blank screen row.
+-- Images -------------------------------------------------------------------------
+
+-- Absolute path of the image file; relative paths are relative to the .md file
+local function image_path(buf, node)
+  local dest = find_child(node, "link_destination")
+  if not dest then
+    return nil, "the image has no path"
+  end
+  local path = vim.treesitter.get_node_text(dest, buf)
+  if path:match("^%a+://") then
+    return nil, "remote images are not supported: " .. path
+  end
+  path = vim.fs.normalize(path) -- expands "~" and $VARS
+  if not path:match("^/") then
+    path = vim.fs.joinpath(vim.fs.dirname(vim.api.nvim_buf_get_name(buf)), path)
+  end
+  if not vim.uv.fs_stat(path) then
+    return nil, "file not found: " .. path
+  end
+  return path
+end
+
+-- Columns and rows of catimg output, ignoring the color escape codes
+local function ansi_size(output)
+  local plain = output:gsub("\27%[[%d;?]*%a", "")
+  local width, height = 0, 0
+  for line in plain:gmatch("[^\n]+") do
+    width = math.max(width, vim.fn.strdisplaywidth(line))
+    height = height + 1
+  end
+  return width, height
+end
+
+-- Run catimg in the background and call on_done(output) when it finishes
+-- (output is nil if it failed). catimg counts in half cells: "-w 60" gives
+-- 30 columns and "-H 20" gives 10 rows, hence the "* 2".
+local function catimg(path, flag, cells, on_done)
+  vim.system({ "catimg", flag, tostring(cells * 2), path }, { text = true }, function(result)
+    -- Like timer callbacks, this runs outside the main loop
+    vim.schedule(function()
+      on_done(result.code == 0 and result.stdout or nil)
+    end)
+  end)
+end
+
+-- catimg takes a width OR a height: fit by width first, then by height if
+-- the result is still too tall
+local function fit_catimg(path, max_cols, max_rows, on_done)
+  catimg(path, "-w", max_cols, function(output)
+    if output and select(2, ansi_size(output)) > max_rows then
+      catimg(path, "-H", max_rows, on_done)
+    else
+      on_done(output)
+    end
+  end)
+end
+
+-- One highlight group per fg/bg color pair of the image cells, created on
+-- first use. Kept as name -> colors so they can be recreated after
+-- :colorscheme, which clears every group.
+local pixel_groups = {}
+
+local function pixel_hl(fg, bg)
+  if not fg and not bg then
+    return nil
+  end
+  local name = "NanquimPx_" .. (fg or "none") .. "_" .. (bg or "none")
+  if not pixel_groups[name] then
+    pixel_groups[name] = { fg = fg and "#" .. fg, bg = bg and "#" .. bg }
+    vim.api.nvim_set_hl(0, name, pixel_groups[name])
+  end
+  return name
+end
+
+local function restore_pixel_groups()
+  for name, colors in pairs(pixel_groups) do
+    vim.api.nvim_set_hl(0, name, colors)
+  end
+end
+
+-- catimg output -> virt_lines. Each cell is a half block ("▄") whose
+-- foreground and background colors are two stacked pixels. A run of cells
+-- with the same colors becomes one chunk.
+local function ansi_to_virt_lines(output, indent)
+  local lines = {}
+  for raw in output:gmatch("[^\n]+") do
+    local chunks, fg, bg, has_text = { { indent } }, nil, nil, false
+    -- Each piece: an escape code ("\27[38;2;R;G;Bm") and the text after it
+    for params, command, text in raw:gmatch("\27%[([%d;?]*)(%a)([^\27]*)") do
+      if command == "m" then
+        local kind, r, g, b = params:match("^(%d+);2;(%d+);(%d+);(%d+)$")
+        local hex = r and string.format("%02x%02x%02x", tonumber(r), tonumber(g), tonumber(b))
+        if kind == "38" then
+          fg = hex
+        elseif kind == "48" then
+          bg = hex
+        elseif params == "" or params == "0" then
+          fg, bg = nil, nil -- reset
+        end
+      end
+      if text ~= "" then
+        has_text = true
+        local hl = pixel_hl(fg, bg)
+        local last = chunks[#chunks]
+        if last[2] == hl then
+          last[1] = last[1] .. text
+        else
+          table.insert(chunks, { text, hl })
+        end
+      end
+    end
+    if has_text then
+      table.insert(lines, chunks)
+    end
+  end
+  return lines
+end
+
+-- "path:mtime:size" -> virt_lines, or false while catimg is still running.
+-- Rendering runs on every cursor move; catimg runs once per image.
+local image_cache = {}
+
+-- virt_lines for an image, or nil on the first call: then catimg starts in
+-- the background and the windows showing `buf` are rendered again when done
+local function image_virt_lines(buf, path, max_cols, indent)
+  local key = table.concat({ path, vim.uv.fs_stat(path).mtime.sec, max_cols, config.image.max_height, #indent }, ":")
+  if image_cache[key] == nil then
+    image_cache[key] = false
+    fit_catimg(path, max_cols, config.image.max_height, function(output)
+      image_cache[key] = output and ansi_to_virt_lines(output, indent) or {}
+      if is_enabled(buf) then
+        for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+          M.render(win)
+        end
+      end
+    end)
+  end
+  return image_cache[key] or nil
+end
+
+-- ![alt](path) becomes "<icon> alt", and the image itself is drawn under the
+-- line. The alt text stays real text and only the icon is inserted: Neovim
+-- sizes wrapped lines by raw text + virt_text, so long inserted text can add
+-- a blank screen row.
 function renderers.image(ctx, node)
   local row, col, end_row, end_col = node:range()
   local desc = find_child(node, "image_description")
@@ -488,6 +634,20 @@ function renderers.image(ctx, node)
       virt_text = { { config.icons.image .. vim.treesitter.get_node_text(dest, ctx.buf), "NanquimImage" } },
       virt_text_pos = "inline",
     })
+  end
+
+  -- The picture, in fake lines under the image's line. Needs 24-bit colors.
+  if config.image.inline and vim.o.termguicolors and vim.fn.executable("catimg") == 1 then
+    local path = image_path(ctx.buf, node)
+    if path then
+      local line = vim.api.nvim_buf_get_lines(ctx.buf, end_row, end_row + 1, false)[1]
+      local indent = string.rep(" ", vim.fn.strdisplaywidth(line:match("^%s*")))
+      local max_cols = math.min(config.image.max_width, text_width(ctx.win) - #indent)
+      local lines = image_virt_lines(ctx.buf, path, max_cols, indent)
+      if lines and #lines > 0 then
+        vim.api.nvim_buf_set_extmark(ctx.buf, ns, end_row, 0, { virt_lines = lines })
+      end
+    end
   end
 end
 
@@ -769,79 +929,13 @@ local function image_at_cursor(buf, win)
   return first
 end
 
--- Absolute path of the image file; relative paths are relative to the .md file
-local function image_path(buf, node)
-  local dest = find_child(node, "link_destination")
-  if not dest then
-    return nil, "the image has no path"
-  end
-  local path = vim.treesitter.get_node_text(dest, buf)
-  if path:match("^%a+://") then
-    return nil, "remote images are not supported: " .. path
-  end
-  path = vim.fs.normalize(path) -- expands "~" and $VARS
-  if not path:match("^/") then
-    path = vim.fs.joinpath(vim.fs.dirname(vim.api.nvim_buf_get_name(buf)), path)
-  end
-  if not vim.uv.fs_stat(path) then
-    return nil, "file not found: " .. path
-  end
-  return path
-end
-
--- catimg counts in half cells: "-w 60" gives 30 columns, "-H 20" gives 10 rows
-local function catimg(path, flag, cells)
-  local result = vim.system({ "catimg", flag, tostring(cells * 2), path }, { text = true }):wait()
-  return result.code == 0 and result.stdout or nil
-end
-
--- Columns and rows of catimg output, ignoring the color escape codes
-local function ansi_size(output)
-  local plain = output:gsub("\27%[[%d;?]*%a", "")
-  local width, height = 0, 0
-  for line in plain:gmatch("[^\n]+") do
-    width = math.max(width, vim.fn.strdisplaywidth(line))
-    height = height + 1
-  end
-  return width, height
-end
-
--- Show the image on the cursor line in a floating window, drawn by catimg
-function M.preview_image()
-  local function fail(message)
-    vim.notify("nanquim: " .. message, vim.log.levels.WARN)
-  end
-  if vim.fn.executable("catimg") == 0 then
-    return fail("catimg not found, install it to preview images")
-  end
-
-  local buf, win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
-  local node = image_at_cursor(buf, win)
-  if not node then
-    return fail("no image on this line")
-  end
-  local path, err = image_path(buf, node)
-  if not path then
-    return fail(err)
-  end
-
-  -- Fit in 80% of the editor: by width first, by height if still too tall
-  local max_cols = math.floor(vim.o.columns * 0.8)
-  local max_rows = math.floor(vim.o.lines * 0.8) - 2 -- minus the border
-  local output = catimg(path, "-w", max_cols)
-  if output and select(2, ansi_size(output)) > max_rows then
-    output = catimg(path, "-H", max_rows)
-  end
-  if not output then
-    return fail("catimg could not read " .. path)
-  end
+-- Show catimg output in a floating window titled `title`
+local function open_image_float(output, title)
   -- Drop the final newline: in a terminal exactly `height` rows tall it
   -- would scroll the first row out of view
   output = output:gsub("\n([^\n]*)$", "%1")
   local width, height = ansi_size(output)
 
-  local desc = find_child(node, "image_description")
-  local title = desc and vim.treesitter.get_node_text(desc, buf) or vim.fs.basename(path)
   local float_buf = vim.api.nvim_create_buf(false, true)
   local float = vim.api.nvim_open_win(float_buf, true, {
     relative = "editor",
@@ -874,6 +968,39 @@ function M.preview_image()
       end
     end,
   })
+end
+
+-- Show the image on the cursor line in a floating window, drawn by catimg
+function M.preview_image()
+  local function fail(message)
+    vim.notify("nanquim: " .. message, vim.log.levels.WARN)
+  end
+  if vim.fn.executable("catimg") == 0 then
+    return fail("catimg not found, install it to preview images")
+  end
+
+  local buf, win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
+  local node = image_at_cursor(buf, win)
+  if not node then
+    return fail("no image on this line")
+  end
+  local path, err = image_path(buf, node)
+  if not path then
+    return fail(err)
+  end
+
+  local desc = find_child(node, "image_description")
+  local title = desc and vim.treesitter.get_node_text(desc, buf) or vim.fs.basename(path)
+
+  -- Fit in 80% of the editor
+  local max_cols = math.floor(vim.o.columns * 0.8)
+  local max_rows = math.floor(vim.o.lines * 0.8) - 2 -- minus the border
+  fit_catimg(path, max_cols, max_rows, function(output)
+    if not output then
+      return fail("catimg could not read " .. path)
+    end
+    open_image_float(output, title)
+  end)
 end
 
 -- Enable/disable ---------------------------------------------------------------
@@ -923,7 +1050,13 @@ function M.setup(opts)
   local group = vim.api.nvim_create_augroup("nanquim", { clear = true })
 
   -- :colorscheme clears every highlight group, ours included
-  vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = set_highlights })
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = group,
+    callback = function()
+      set_highlights()
+      restore_pixel_groups()
+    end,
+  })
 
   -- A buffer appeared in a window, or its filetype was (re)detected
   vim.api.nvim_create_autocmd({ "BufWinEnter", "FileType" }, {
