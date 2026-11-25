@@ -29,6 +29,30 @@ Imagem sem texto alternativo: ![](imagens/foto.jpg)
 
 ### Título com `código` e **negrito**
 
+## Tabelas
+
+Alinhada: ganha bordas, e as células com negrito, código e link continuam
+alinhadas mesmo com a marcação escondida.
+
+| Elemento | Exemplo                     | Status |
+|----------|-----------------------------|--------|
+| Negrito  | **forte**                   | ok     |
+| Código   | `vim.api`                   | ok     |
+| Link     | [Neovim](https://neovim.io) | ok     |
+| Acentos  | ação, coração               | ok     |
+
+Desalinhada: só troca os `|` e a linha do meio, sem bordas.
+
+| a | b |
+|---|---|
+| célula longa | x |
+
+Sem `|` nas pontas:
+
+x | y
+--|--
+1 | 2
+
 ## Blocos de código
 
 ```lua

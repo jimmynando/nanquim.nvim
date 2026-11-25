@@ -20,6 +20,7 @@ local block_query = vim.treesitter.query.parse("markdown", [[
   [(list_marker_minus) (list_marker_plus) (list_marker_star)] @bullet
   [(task_list_marker_unchecked) (task_list_marker_checked)] @checkbox
   (block_quote) @quote
+  (pipe_table) @table
 ]])
 
 -- Inline elements from the markdown_inline grammar (paragraphs, headings,
@@ -71,6 +72,8 @@ local function set_highlights()
   link("NanquimCodeInline", "NanquimCode")
   link("NanquimLink", "@markup.link.label")
   link("NanquimImage", "Special")
+  link("NanquimTable", "LineNr")
+  link("NanquimTableHead", "@markup.strong")
   link("NanquimWarning", "DiagnosticWarn")
   link("NanquimCaution", "DiagnosticError")
 end
@@ -377,6 +380,147 @@ function renderers.image(ctx, node)
   end
 end
 
+-- Display cells our marks took away from [col, end_col) on `row`: concealed
+-- text minus inserted inline virt_text. It reads back the extmarks that the
+-- inline pass already placed, so it matches what is on screen.
+local function hidden_width(ctx, row, line, col, end_col)
+  local hidden = 0
+  local marks = vim.api.nvim_buf_get_extmarks(ctx.buf, ns, { row, col }, { row, end_col - 1 }, { details = true })
+  for _, mark in ipairs(marks) do
+    local start, details = mark[3], mark[4]
+    if details.conceal and (details.end_row or row) == row then
+      local text = line:sub(start + 1, math.min(details.end_col, end_col))
+      hidden = hidden + vim.fn.strdisplaywidth(text) - vim.fn.strdisplaywidth(details.conceal)
+    end
+    if details.virt_text and details.virt_text_pos == "inline" then
+      for _, chunk in ipairs(details.virt_text) do
+        hidden = hidden - vim.fn.strdisplaywidth(chunk[1])
+      end
+    end
+  end
+  return hidden
+end
+
+-- Delimiter row text drawn with box characters, one for one:
+-- "|---|:--:|" -> "├───┼────┤" (or "┌───┬────┐" for a border line)
+local function box_line(text, left, mid, right)
+  local out = {}
+  for i = 1, #text do
+    local char = text:sub(i, i)
+    if char ~= "|" then
+      out[i] = "─"
+    elseif i == 1 then
+      out[i] = left
+    elseif i == #text then
+      out[i] = right
+    else
+      out[i] = mid
+    end
+  end
+  return table.concat(out)
+end
+
+-- Tables: "|" -> "│", the delimiter row -> "├──┼──┤", and, when every row
+-- has its pipes in the same columns, borders above and below.
+function renderers.table(ctx, node)
+  local rows = {}
+  for child in node:iter_children() do
+    if child:type():match("^pipe_table") then
+      local row = child:start()
+      local info = {
+        row = row,
+        line = vim.api.nvim_buf_get_lines(ctx.buf, row, row + 1, false)[1],
+        delimiter = child:type() == "pipe_table_delimiter_row",
+        pipes = {}, -- byte columns, for extmarks
+        cols = {}, -- display columns, for alignment ("ç" is 2 bytes, 1 cell)
+      }
+      for pipe in child:iter_children() do
+        if pipe:type() == "|" then
+          local _, col = pipe:start()
+          table.insert(info.pipes, col)
+          table.insert(info.cols, vim.fn.strdisplaywidth(info.line:sub(1, col)))
+        end
+      end
+      if child:type() == "pipe_table_header" then
+        for cell in child:iter_children() do
+          if cell:type() == "pipe_table_cell" then
+            paint(ctx, cell, "NanquimTableHead")
+          end
+        end
+      end
+      table.insert(rows, info)
+    end
+  end
+
+  local delimiter = rows[2] -- always the second row in a valid table
+  if not delimiter then
+    return
+  end
+  local aligned = true
+  for _, info in ipairs(rows) do
+    aligned = aligned and vim.deep_equal(info.cols, delimiter.cols)
+  end
+
+  -- The delimiter row without its indent and trailing spaces
+  local indent, body = delimiter.line:match("^(%s*)(.-)%s*$")
+
+  for _, info in ipairs(rows) do
+    if info.row ~= ctx.cursor_row then -- anti-conceal: raw on the cursor line
+      if info.delimiter then
+        vim.api.nvim_buf_set_extmark(ctx.buf, ns, info.row, #indent, {
+          virt_text = { { box_line(body, "├", "┼", "┤"), "NanquimTable" } },
+          virt_text_pos = "overlay",
+        })
+      else
+        for _, col in ipairs(info.pipes) do
+          vim.api.nvim_buf_set_extmark(ctx.buf, ns, info.row, col, {
+            virt_text = { { "│", "NanquimTable" } },
+            virt_text_pos = "overlay",
+          })
+        end
+      end
+    end
+  end
+
+  if not aligned then
+    return -- borders and padding only make sense when the columns line up
+  end
+
+  -- Borders need pipes on both edges ("| a | b |", not "a | b")
+  if body:match("^|.*|$") then
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, rows[1].row, 0, {
+      virt_lines = { { { indent .. box_line(body, "┌", "┬", "┐"), "NanquimTable" } } },
+      virt_lines_above = true,
+    })
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, rows[#rows].row, 0, {
+      virt_lines = { { { indent .. box_line(body, "└", "┴", "┘"), "NanquimTable" } } },
+    })
+  end
+
+  -- Concealed markup ("**", "`", link URLs) makes cells shorter and pulls the
+  -- next "|" left. Pad each cell back with spaces before its closing pipe.
+  -- Runs after the inline pass (ctx.deferred), once those marks exist.
+  table.insert(ctx.deferred, function()
+    for _, info in ipairs(rows) do
+      if not info.delimiter and info.row ~= ctx.cursor_row then
+        local cell_start = 0
+        for _, col in ipairs(info.pipes) do
+          local pad = col > cell_start and hidden_width(ctx, info.row, info.line, cell_start, col) or 0
+          if pad > 0 then
+            -- One column before the pipe: at the pipe itself, the "│" overlay
+            -- would land on the inserted spaces instead of on the "|"
+            vim.api.nvim_buf_set_extmark(ctx.buf, ns, info.row, col - 1, {
+              virt_text = { { string.rep(" ", pad) } },
+              virt_text_pos = "inline",
+            })
+          end
+          cell_start = col + 1
+        end
+      end
+    end
+  end)
+end
+
 -- Rows to render: what the window shows, plus one screen above and below
 local function visible_range(win)
   local margin = vim.api.nvim_win_get_height(win)
@@ -403,6 +547,7 @@ function M.render(win)
     cursor_row = vim.api.nvim_win_get_cursor(win)[1] - 1,
     first = first,
     last = last,
+    deferred = {}, -- functions that need the inline marks in place first
   }
   parser:parse({ first, last })
 
@@ -422,6 +567,9 @@ function M.render(win)
   local inline = parser:children().markdown_inline
   if inline then
     run(inline_query, inline)
+  end
+  for _, fn in ipairs(ctx.deferred) do
+    fn()
   end
 end
 
