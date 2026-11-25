@@ -22,8 +22,8 @@ text and lines.
 - **Tables**: box-drawing borders, and columns that stay aligned when the
   markup inside cells is concealed
 - **Horizontal rules** across the whole window
-- **Images** drawn right in the buffer under their line, and a larger
-  preview in a floating window, both with `catimg`
+- **Images** previewed in a floating window with `catimg`, and optionally
+  drawn right in the buffer under their line
 - Colors come from your colorscheme and update on `:colorscheme`
 - Only the visible part of the window is rendered, so large files stay fast
 
@@ -62,7 +62,7 @@ require("nanquim").setup({
   preset = "unicode", -- icon set: "unicode" (any font) or "nerd" (Nerd Font)
   icons = {}, -- overrides on top of the preset
   image = {
-    inline = true, -- draw images under their line (needs catimg and termguicolors)
+    inline = false, -- also draw images under their line (see below)
     max_width = 60, -- columns
     max_height = 15, -- rows
   },
@@ -114,8 +114,19 @@ vim.keymap.set("n", "<leader>mi", "<cmd>Nanquim image<cr>", { desc = "Preview Ma
 Image paths are relative to the Markdown file. Remote images (`https://...`)
 are not supported. Images are drawn with colored half blocks, so each cell
 holds two pixels: fine for logos, diagrams and photos, too coarse for
-screenshots of text. Inline images appear a moment after the rest, because
-`catimg` runs in the background; the result is cached per file.
+screenshots of text.
+
+### Inline images
+
+With `image = { inline = true }`, images are also drawn in the buffer, under
+their line. This is off by default because it makes scrolling jump: Neovim
+scrolls by buffer lines, so a line with a 15-row image below it moves as one
+16-row block, and moving the cursor past it can shift the view by a whole
+image at once. `'smoothscroll'` does not help, since it only splits wrapped
+text, not virtual lines.
+
+Inline images appear a moment after the rest, because `catimg` runs in the
+background; the result is cached per file.
 
 ## Highlight groups
 

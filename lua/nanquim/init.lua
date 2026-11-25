@@ -27,7 +27,7 @@ local DEFAULTS = {
   preset = "unicode", -- icon set: "unicode" (any font) or "nerd" (Nerd Font)
   icons = {}, -- overrides on top of the preset, e.g. { bullets = { "-", "*" } }
   image = {
-    inline = true, -- draw images under their line (needs catimg and termguicolors)
+    inline = false, -- also draw images under their line (makes scrolling jump)
     max_width = 60, -- columns
     max_height = 15, -- rows
   },
