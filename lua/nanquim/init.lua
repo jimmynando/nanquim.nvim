@@ -49,8 +49,53 @@ local CALLOUTS = {
 local BULLETS = { "●", "○", "■", "□" }
 local BULLET_TYPES = { list_marker_minus = true, list_marker_plus = true, list_marker_star = true }
 
+-- Foreground color of a group (links followed), or nil
+local function fg_of(name)
+  return vim.api.nvim_get_hl(0, { name = name, link = false }).fg
+end
+
+-- Mix two 0xRRGGBB colors: alpha = 1 gives `fg`, alpha = 0 gives `bg`
+local function blend(fg, bg, alpha)
+  local result = 0
+  for _, shift in ipairs({ 0x10000, 0x100, 1 }) do
+    local a = math.floor(fg / shift) % 256
+    local b = math.floor(bg / shift) % 256
+    result = result + math.floor(a * alpha + b * (1 - alpha) + 0.5) * shift
+  end
+  return result
+end
+
+-- Used when the theme paints every heading level the same color
+local HEADING_FALLBACK = { "Function", "Constant", "Type", "Identifier", "Special", "Statement" }
+
+-- NanquimH1..6 (text) and NanquimH1Bg..6Bg (line background, the heading
+-- color faded into the editor background). Recomputed on :colorscheme.
+local function set_heading_highlights()
+  local colors, distinct = {}, false
+  for level = 1, 6 do
+    colors[level] = fg_of("@markup.heading." .. level .. ".markdown")
+    distinct = distinct or colors[level] ~= colors[1]
+  end
+  if not distinct then
+    for level = 1, 6 do
+      colors[level] = fg_of(HEADING_FALLBACK[level])
+    end
+  end
+
+  local normal_bg = vim.api.nvim_get_hl(0, { name = "Normal" }).bg
+  for level = 1, 6 do
+    local fg = colors[level] or fg_of("Title")
+    vim.api.nvim_set_hl(0, "NanquimH" .. level, { fg = fg, bold = true, default = true })
+    -- A transparent terminal background has no color to mix with
+    if fg and normal_bg then
+      vim.api.nvim_set_hl(0, "NanquimH" .. level .. "Bg", { bg = blend(fg, normal_bg, 0.15), default = true })
+    end
+  end
+end
+
 -- `default = true` lets a colorscheme define these groups itself
 local function set_highlights()
+  set_heading_highlights()
   local function link(name, target)
     vim.api.nvim_set_hl(0, name, { link = target, default = true })
   end
@@ -101,6 +146,10 @@ function renderers.heading(ctx, node)
   if content then
     _, text_col = content:start() -- skip the space after the marker too
   end
+  local hl = "NanquimH" .. marker:type():match("atx_h(%d)_marker")
+
+  -- Background across the whole line, the cursor line included
+  vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, 0, { line_hl_group = hl .. "Bg" })
 
   -- Hide "## " and show a marker in its place. Anti-conceal: on the cursor
   -- line Neovim already shows the concealed text, but not our virt_text,
@@ -109,7 +158,7 @@ function renderers.heading(ctx, node)
     vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, marker_col, {
       end_col = text_col,
       conceal = "",
-      virt_text = { { "◆ ", "Title" } },
+      virt_text = { { "◆ ", hl } },
       virt_text_pos = "inline",
     })
   end
@@ -120,7 +169,7 @@ function renderers.heading(ctx, node)
     vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, text_col, {
       end_row = end_row,
       end_col = end_col,
-      hl_group = "Title",
+      hl_group = hl,
     })
   end
 end
