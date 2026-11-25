@@ -19,7 +19,17 @@ local block_query = vim.treesitter.query.parse("markdown", [[
   (thematic_break) @rule
   [(list_marker_minus) (list_marker_plus) (list_marker_star)] @bullet
   [(task_list_marker_unchecked) (task_list_marker_checked)] @checkbox
+  (block_quote) @quote
 ]])
+
+-- GitHub callouts ("> [!NOTE]"): icon, title and highlight group
+local CALLOUTS = {
+  NOTE = { "ℹ", "Note", "NanquimNote" },
+  TIP = { "▶", "Tip", "NanquimTip" },
+  IMPORTANT = { "◉", "Important", "NanquimImportant" },
+  WARNING = { "▲", "Warning", "NanquimWarning" },
+  CAUTION = { "‼", "Caution", "NanquimCaution" },
+}
 
 -- One bullet per nesting level, cycling after the last
 local BULLETS = { "●", "○", "■", "□" }
@@ -37,6 +47,12 @@ local function set_highlights()
   link("NanquimTodo", "Special")
   link("NanquimDone", "DiagnosticOk")
   link("NanquimDoneText", "Comment")
+  link("NanquimQuote", "Comment")
+  link("NanquimNote", "DiagnosticInfo")
+  link("NanquimTip", "DiagnosticOk")
+  link("NanquimImportant", "Constant") -- purple in many themes; DiagnosticHint is often teal
+  link("NanquimWarning", "DiagnosticWarn")
+  link("NanquimCaution", "DiagnosticError")
 end
 
 local function is_enabled(buf)
@@ -145,17 +161,17 @@ function renderers.rule(ctx, node)
   })
 end
 
--- Nesting level of a list marker: how many `list` nodes sit above it
-local function list_level(node)
-  local level = 0
+-- How many nodes of `type` sit above `node` (list nesting level, etc.)
+local function count_ancestors(node, type)
+  local count = 0
   local parent = node:parent()
   while parent do
-    if parent:type() == "list" then
-      level = level + 1
+    if parent:type() == type then
+      count = count + 1
     end
     parent = parent:parent()
   end
-  return level
+  return count
 end
 
 -- "-", "*" or "+" replaced by a symbol per level. Overlay swaps characters
@@ -166,7 +182,7 @@ function renderers.bullet(ctx, node)
   if row == ctx.cursor_row or (sibling and sibling:type():match("^task_list_marker")) then
     return -- cursor line shows raw; task items are drawn by renderers.checkbox
   end
-  local level = list_level(node)
+  local level = count_ancestors(node, "list")
   vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
     virt_text = { { BULLETS[(level - 1) % #BULLETS + 1], "NanquimBullet" } },
     virt_text_pos = "overlay",
@@ -201,6 +217,49 @@ function renderers.checkbox(ctx, node)
       end_col = text_end,
       hl_group = "NanquimDoneText",
     })
+  end
+end
+
+-- Every ">" becomes "▎". The tree only marks the first ">" clearly (later ones
+-- are scattered block_continuation nodes), so each line's prefix is scanned
+-- instead. "> [!NOTE]" on the first line turns the quote into a callout.
+function renderers.quote(ctx, node)
+  local start_row, start_col = node:start()
+  local function line(row)
+    return vim.api.nvim_buf_get_lines(ctx.buf, row, row + 1, false)[1]
+  end
+
+  local hl = "NanquimQuote"
+  -- "()" captures a position, so this gives where "[!NOTE]" starts and ends
+  local from, kind, to = line(start_row):match("^[%s>]*()%[!(%a+)%]()", start_col + 1)
+  local callout = kind and CALLOUTS[kind:upper()]
+  if callout then
+    hl = callout[3]
+    if start_row ~= ctx.cursor_row then
+      vim.api.nvim_buf_set_extmark(ctx.buf, ns, start_row, from - 1, {
+        end_col = to - 1,
+        conceal = "",
+        virt_text = { { callout[1] .. " " .. callout[2], hl } },
+        virt_text_pos = "inline",
+      })
+    end
+  end
+
+  -- A nested quote's ">" are on the same lines as the outer one's; the
+  -- outermost quote draws them all, in its own color.
+  if count_ancestors(node, "block_quote") > 0 then
+    return
+  end
+  for row = math.max(start_row, ctx.first), math.min(last_row(node), ctx.last - 1) do
+    if row ~= ctx.cursor_row then
+      local prefix = line(row):match("^[%s>]*", start_col + 1)
+      for pos in prefix:gmatch("()>") do
+        vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, start_col + pos - 1, {
+          virt_text = { { "▎", hl } },
+          virt_text_pos = "overlay",
+        })
+      end
+    end
   end
 end
 

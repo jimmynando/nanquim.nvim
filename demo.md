@@ -54,6 +54,31 @@ bloco sem linguagem
   - [X] subtarefa feita, com X maiúsculo
 1. [ ] tarefa numerada mantém o número
 
+## Citações e callouts
+
+> Citação comum: o `>` vira uma barra.
+> Segunda linha da mesma citação.
+>
+> > Citação aninhada: duas barras.
+
+> [!NOTE]
+> Informação que vale notar.
+
+> [!TIP]
+> Uma dica para fazer melhor.
+
+> [!IMPORTANT]
+> Algo essencial para o objetivo.
+
+> [!WARNING]
+> Pede atenção para evitar problemas.
+
+> [!CAUTION]
+> Risco de consequência negativa.
+
+> [!NOTA]
+> Tipo desconhecido fica como citação comum.
+
 ## Linha horizontal
 
 ---
