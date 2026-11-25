@@ -16,6 +16,19 @@ Parágrafo comum: nada muda aqui.
 
 > # Título dentro de citação
 
+## Texto inline
+
+Texto com **negrito**, *itálico*, ***os dois***, `código` e ~~tachado~~.
+
+Um [link para o Neovim](https://neovim.io "site oficial") e um link direto:
+<https://github.com>.
+
+Imagem com texto alternativo: ![logo do Neovim](imagens/logo.png)
+
+Imagem sem texto alternativo: ![](imagens/foto.jpg)
+
+### Título com `código` e **negrito**
+
 ## Blocos de código
 
 ```lua

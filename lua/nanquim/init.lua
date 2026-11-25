@@ -22,6 +22,19 @@ local block_query = vim.treesitter.query.parse("markdown", [[
   (block_quote) @quote
 ]])
 
+-- Inline elements from the markdown_inline grammar (paragraphs, headings,
+-- cells). "**", "*" and "~~" are all emphasis_delimiter nodes.
+local inline_query = vim.treesitter.query.parse("markdown_inline", [[
+  [(emphasis_delimiter) (code_span_delimiter)] @delimiter
+  (emphasis) @italic
+  (strong_emphasis) @bold
+  (strikethrough) @strike
+  (code_span) @code_inline
+  (inline_link) @link
+  (image) @image
+  (uri_autolink) @autolink
+]])
+
 -- GitHub callouts ("> [!NOTE]"): icon, title and highlight group
 local CALLOUTS = {
   NOTE = { "ℹ", "Note", "NanquimNote" },
@@ -51,6 +64,13 @@ local function set_highlights()
   link("NanquimNote", "DiagnosticInfo")
   link("NanquimTip", "DiagnosticOk")
   link("NanquimImportant", "Constant") -- purple in many themes; DiagnosticHint is often teal
+  -- @markup.* have built-in defaults (bold, italic...), so they always exist
+  link("NanquimBold", "@markup.strong")
+  link("NanquimItalic", "@markup.italic")
+  link("NanquimStrike", "@markup.strikethrough")
+  link("NanquimCodeInline", "NanquimCode")
+  link("NanquimLink", "@markup.link.label")
+  link("NanquimImage", "Special")
   link("NanquimWarning", "DiagnosticWarn")
   link("NanquimCaution", "DiagnosticError")
 end
@@ -263,6 +283,100 @@ function renderers.quote(ctx, node)
   end
 end
 
+-- Inline helpers: hide a range, or paint a node with a highlight group
+local function conceal(ctx, row, col, end_row, end_col)
+  vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, { end_row = end_row, end_col = end_col, conceal = "" })
+end
+
+local function paint(ctx, node, hl)
+  local row, col, end_row, end_col = node:range()
+  vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, { end_row = end_row, end_col = end_col, hl_group = hl })
+end
+
+local function find_child(node, type)
+  for child in node:iter_children() do
+    if child:type() == type then
+      return child
+    end
+  end
+end
+
+-- Only conceal and color below (no virt_text), so the cursor line needs no
+-- special case: Neovim shows the raw markers there by itself.
+function renderers.delimiter(ctx, node)
+  conceal(ctx, node:range())
+end
+
+function renderers.italic(ctx, node)
+  paint(ctx, node, "NanquimItalic")
+end
+
+function renderers.bold(ctx, node)
+  paint(ctx, node, "NanquimBold")
+end
+
+function renderers.strike(ctx, node)
+  paint(ctx, node, "NanquimStrike")
+end
+
+function renderers.code_inline(ctx, node)
+  paint(ctx, node, "NanquimCodeInline")
+end
+
+-- [text](url "title"): hide everything around the text
+function renderers.link(ctx, node)
+  local text = find_child(node, "link_text")
+  if not text then
+    return
+  end
+  local row, col, end_row, end_col = node:range()
+  local text_row, text_col, text_end_row, text_end_col = text:range()
+  conceal(ctx, row, col, text_row, text_col)
+  conceal(ctx, text_end_row, text_end_col, end_row, end_col)
+  paint(ctx, text, "NanquimLink")
+end
+
+-- <https://...>: hide the angle brackets
+function renderers.autolink(ctx, node)
+  local row, col, end_row, end_col = node:range()
+  conceal(ctx, row, col, row, col + 1)
+  conceal(ctx, end_row, end_col - 1, end_row, end_col)
+  paint(ctx, node, "NanquimLink")
+end
+
+-- ![alt](path) becomes "▧ alt". The alt text stays real text and only the
+-- icon is inserted: Neovim sizes wrapped lines by raw text + virt_text, so
+-- long inserted text can add a blank screen row.
+function renderers.image(ctx, node)
+  local row, col, end_row, end_col = node:range()
+  local desc = find_child(node, "image_description")
+  local dest = find_child(node, "link_destination")
+  local on_cursor = row == ctx.cursor_row -- anti-conceal: no virt_text there
+
+  if desc then
+    local desc_row, desc_col, desc_end_row, desc_end_col = desc:range()
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
+      end_row = desc_row,
+      end_col = desc_col,
+      conceal = "",
+      virt_text = not on_cursor and { { "▧ ", "NanquimImage" } } or nil,
+      virt_text_pos = "inline",
+    })
+    conceal(ctx, desc_end_row, desc_end_col, end_row, end_col)
+    paint(ctx, desc, "NanquimImage")
+  elseif dest and not on_cursor then
+    -- ![](path): Neovim's own highlighter conceals the path, so it can't
+    -- stay real text; show "▧ path" as virt_text instead
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
+      end_row = end_row,
+      end_col = end_col,
+      conceal = "",
+      virt_text = { { "▧ " .. vim.treesitter.get_node_text(dest, ctx.buf), "NanquimImage" } },
+      virt_text_pos = "inline",
+    })
+  end
+end
+
 -- Rows to render: what the window shows, plus one screen above and below
 local function visible_range(win)
   local margin = vim.api.nvim_win_get_height(win)
@@ -292,12 +406,22 @@ function M.render(win)
   }
   parser:parse({ first, last })
 
-  -- trees() on the root parser = block grammar only. for_each_tree would also
-  -- visit markdown injected into ```markdown fences and render headings there.
-  for _, tree in ipairs(parser:trees()) do
-    for id, node in block_query:iter_captures(tree:root(), buf, first, last) do
-      renderers[block_query.captures[id]](ctx, node)
+  local function run(query, ltree)
+    for _, tree in ipairs(ltree:trees()) do
+      for id, node in query:iter_captures(tree:root(), buf, first, last) do
+        renderers[query.captures[id]](ctx, node)
+      end
     end
+  end
+
+  -- The root parser holds the block grammar. Inline text is injected as
+  -- separate markdown_inline trees; children() gives only the root's own
+  -- injections. for_each_tree would also visit markdown injected into
+  -- ```markdown fences and render it as if it were real markdown.
+  run(block_query, parser)
+  local inline = parser:children().markdown_inline
+  if inline then
+    run(inline_query, inline)
   end
 end
 
