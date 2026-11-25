@@ -36,6 +36,24 @@ bloco sem linguagem
 # exemplo de markdown, não é título
 ```
 
+## Listas
+
+- nível 1
+  - nível 2
+    - nível 3
+      - nível 4
+        - nível 5 volta ao símbolo do nível 1
+* asterisco também vira bullet
++ mais também
+
+1. lista numerada
+2. fica com os números
+
+- [ ] tarefa pendente
+- [x] tarefa feita
+  - [X] subtarefa feita, com X maiúsculo
+1. [ ] tarefa numerada mantém o número
+
 ## Linha horizontal
 
 ---

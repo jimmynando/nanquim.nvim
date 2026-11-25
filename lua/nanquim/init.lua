@@ -17,7 +17,13 @@ local block_query = vim.treesitter.query.parse("markdown", [[
   (atx_heading) @heading
   (fenced_code_block) @code
   (thematic_break) @rule
+  [(list_marker_minus) (list_marker_plus) (list_marker_star)] @bullet
+  [(task_list_marker_unchecked) (task_list_marker_checked)] @checkbox
 ]])
+
+-- One bullet per nesting level, cycling after the last
+local BULLETS = { "●", "○", "■", "□" }
+local BULLET_TYPES = { list_marker_minus = true, list_marker_plus = true, list_marker_star = true }
 
 -- `default = true` lets a colorscheme define these groups itself
 local function set_highlights()
@@ -27,6 +33,10 @@ local function set_highlights()
   link("NanquimCode", "ColorColumn")
   link("NanquimCodeInfo", "Special")
   link("NanquimRule", "LineNr")
+  link("NanquimBullet", "Special")
+  link("NanquimTodo", "Special")
+  link("NanquimDone", "DiagnosticOk")
+  link("NanquimDoneText", "Comment")
 end
 
 local function is_enabled(buf)
@@ -133,6 +143,65 @@ function renderers.rule(ctx, node)
     virt_text = { { string.rep("─", width), "NanquimRule" } },
     virt_text_pos = "overlay",
   })
+end
+
+-- Nesting level of a list marker: how many `list` nodes sit above it
+local function list_level(node)
+  local level = 0
+  local parent = node:parent()
+  while parent do
+    if parent:type() == "list" then
+      level = level + 1
+    end
+    parent = parent:parent()
+  end
+  return level
+end
+
+-- "-", "*" or "+" replaced by a symbol per level. Overlay swaps characters
+-- one for one, so the symbol must be 1 cell wide like the marker.
+function renderers.bullet(ctx, node)
+  local row, col = node:start()
+  local sibling = node:next_named_sibling()
+  if row == ctx.cursor_row or (sibling and sibling:type():match("^task_list_marker")) then
+    return -- cursor line shows raw; task items are drawn by renderers.checkbox
+  end
+  local level = list_level(node)
+  vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
+    virt_text = { { BULLETS[(level - 1) % #BULLETS + 1], "NanquimBullet" } },
+    virt_text_pos = "overlay",
+  })
+end
+
+-- "- [ ]" becomes "▢" and "- [x]" becomes "▣" with the text dimmed. The box
+-- takes the bullet's place; in "1. [ ]" the number stays.
+function renderers.checkbox(ctx, node)
+  local row, col, _, end_col = node:range()
+  local done = node:type() == "task_list_marker_checked"
+  local marker = node:prev_named_sibling()
+  if marker and BULLET_TYPES[marker:type()] then
+    _, col = marker:start()
+  end
+
+  if row ~= ctx.cursor_row then
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, row, col, {
+      end_col = end_col,
+      conceal = "",
+      virt_text = { done and { "▣", "NanquimDone" } or { "▢", "NanquimTodo" } },
+      virt_text_pos = "inline",
+    })
+  end
+
+  local paragraph = node:next_named_sibling()
+  local text = paragraph and paragraph:named_child(0)
+  if done and text and text:type() == "inline" then
+    local start_row, start_col, end_row, text_end = text:range()
+    vim.api.nvim_buf_set_extmark(ctx.buf, ns, start_row, start_col, {
+      end_row = end_row,
+      end_col = text_end,
+      hl_group = "NanquimDoneText",
+    })
+  end
 end
 
 -- Rows to render: what the window shows, plus one screen above and below
