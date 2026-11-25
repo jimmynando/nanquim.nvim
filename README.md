@@ -170,6 +170,8 @@ rendered element, including the edge cases.
 
 ## Limitations
 
+See also [`ROADMAP.md`](ROADMAP.md) for planned improvements.
+
 - When a line's raw text would be wider than the window, Neovim may show an
   extra blank row under it, even if concealing makes it fit. Neovim sizes
   wrapped lines by the raw text.
